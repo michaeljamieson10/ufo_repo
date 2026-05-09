@@ -120,3 +120,43 @@ curl -L https://github.com/<you>/ufo_repo/releases/latest/download/ufo-dbs-*.tar
 - Videos aren't hosted on war.gov; the CSV provides DVIDS video IDs
   and the script scrapes `dvidshub.net/video/<id>` for the embedded
   CloudFront mp4 URL.
+
+### Why not the LangChain web loaders?
+
+LangChain ships a stack of `*Loader` classes for fetching pages —
+`WebBaseLoader`, `RecursiveUrlLoader`, `AsyncHtmlLoader`,
+`SitemapLoader`, `PlaywrightURLLoader`. None of them are used here.
+That's deliberate, and the reason matters for anyone reading this
+repo and wondering if they should "swap to the LangChain way":
+
+1. **Akamai bot detection.** `WebBaseLoader`, `RecursiveUrlLoader`,
+   and `AsyncHtmlLoader` all wrap `requests` / `aiohttp` with a
+   default User-Agent. war.gov 403s every request that doesn't carry
+   a Chrome-shaped client-hint set (`Sec-Ch-Ua`, `Sec-Ch-Ua-Mobile`,
+   `Sec-Ch-Ua-Platform`, `Sec-Fetch-*`, `Upgrade-Insecure-Requests`)
+   together with a current desktop UA. You can pass `header_template=`
+   to those loaders, but at that point you're hand-rolling the
+   anti-bot headers anyway — the loader adds nothing.
+2. **The page is Vue, not HTML.** `RecursiveUrlLoader` only sees
+   what's in the static response; the file list is fetched by the
+   Vue runtime from the CSV manifest. So even with the right headers,
+   the loader returns ~0 file URLs. The actual extraction is "fetch
+   the manifest CSV directly" — which is one `urllib.request` call,
+   not a crawl.
+3. **`PlaywrightURLLoader` would work but is overkill.** Headless
+   Chrome handles the bot check and runs the Vue, but spinning up a
+   browser to download a CSV plus 281 known file URLs costs orders
+   of magnitude more time and disk than a flat-file loop. Kept in
+   reserve in case war.gov ever escalates to a JS challenge.
+4. **DVIDS video URLs need scraping a second site.** The CSV gives
+   DVIDS video IDs, not playable URLs. `dvidshub.net/video/<id>`
+   embeds a CloudFront mp4 inside a `<source>` tag. A custom regex
+   scrape is ~10 lines; wiring a recursive loader to follow per-id
+   pages and extract `<source src=...>` is more code, not less.
+
+The repo's split is consistent everywhere: **LangChain where it adds
+composability** (chains, agents, retrievers, ensemble + reranker),
+**bare libraries where it would only add layers** (HTTP fetch,
+PyMuPDF, Tesseract, PySceneDetect, FalkorDB Cypher). See
+`pipelines/README.md` for the LangChain side and
+`scripts/download.py` for the urllib side.
