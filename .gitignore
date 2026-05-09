@@ -1,9 +1,9 @@
 # Large binaries — too big for git. Keep manifest + scripts only.
-pdfs/
-images/
-videos/
-download.log
-run.out
+releases/*/pdfs/
+releases/*/images/
+releases/*/videos/
+releases/*/download.log
+releases/*/run.out
 *.part
 .DS_Store
 __pycache__/
@@ -12,4 +12,5 @@ __pycache__/
 pipelines/.venv/
 pipelines/data/
 pipelines/store/
+pipelines/graphrag/data/
 *.jsonl

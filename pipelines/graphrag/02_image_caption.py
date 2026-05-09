@@ -23,37 +23,37 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
 PIPELINES = Path(__file__).resolve().parent.parent
-META_CSV = REPO / "metadata" / "uap-csv.csv"
-IMG_DIR = REPO / "images"
 OUT_PATH = Path(__file__).resolve().parent / "data" / "images.jsonl"
 
 sys.path.insert(0, str(PIPELINES))
+sys.path.insert(0, str(REPO))
+from scripts.corpus import manifest_rows, RELEASES_DIR
 
 
-def primary_image_files() -> list[tuple[Path, dict]]:
-    """Manifest IMG-type rows -> (path, metadata)."""
-    out: list[tuple[Path, dict]] = []
-    with open(META_CSV, encoding="utf-8-sig") as f:
-        for r in csv.DictReader(f):
-            if (r.get("Type") or "").strip() != "IMG":
-                continue
-            link = (r.get("PDF | Image Link") or "").strip()
-            if not link.startswith("http"):
-                continue
-            raw = urllib.parse.unquote(
-                os.path.basename(urllib.parse.urlsplit(link).path)
-            ).replace(" ", "_")
-            for cand in (raw, "".join(c if c.isalnum() or c in "._-[]" else "_" for c in raw)):
-                p = IMG_DIR / cand
-                if p.exists():
-                    out.append((p, {
-                        "title": (r.get("Title") or "").strip(),
-                        "agency": (r.get("Agency") or "").strip(),
-                        "incident_date": (r.get("Incident Date") or "").strip(),
-                        "incident_location": (r.get("Incident Location") or "").strip(),
-                        "description": (r.get("Description Blurb") or "").strip(),
-                    }))
-                    break
+def primary_image_files() -> list[tuple[Path, str, dict]]:
+    """Manifest IMG-type rows -> (path, release_id, metadata) across all releases."""
+    out: list[tuple[Path, str, dict]] = []
+    for r, rid in manifest_rows():
+        if (r.get("Type") or "").strip() != "IMG":
+            continue
+        link = (r.get("PDF | Image Link") or "").strip()
+        if not link.startswith("http"):
+            continue
+        raw = urllib.parse.unquote(
+            os.path.basename(urllib.parse.urlsplit(link).path)
+        ).replace(" ", "_")
+        img_dir = RELEASES_DIR / rid / "images"
+        for cand in (raw, "".join(c if c.isalnum() or c in "._-[]" else "_" for c in raw)):
+            p = img_dir / cand
+            if p.exists():
+                out.append((p, rid, {
+                    "title": (r.get("Title") or "").strip(),
+                    "agency": (r.get("Agency") or "").strip(),
+                    "incident_date": (r.get("Incident Date") or "").strip(),
+                    "incident_location": (r.get("Incident Location") or "").strip(),
+                    "description": (r.get("Description Blurb") or "").strip(),
+                }))
+                break
     return out
 
 
@@ -103,7 +103,7 @@ def main() -> None:
     clip_model.eval()
 
     with OUT_PATH.open("a") as out:
-        for i, (path, meta) in enumerate(targets, 1):
+        for i, (path, rid, meta) in enumerate(targets, 1):
             if path.name in done:
                 continue
             cap = caption_image(path)
@@ -115,6 +115,7 @@ def main() -> None:
                 clip_vec = v[0].tolist()
             out.write(json.dumps({
                 "file": path.name,
+                "release_id": rid,
                 "kind": "image",
                 "caption": cap["caption"],
                 "object_kind": cap.get("object_kind"),
@@ -124,7 +125,7 @@ def main() -> None:
                 "clip_embedding": clip_vec,
                 **meta,
             }) + "\n")
-            print(f"  [{i}/{len(targets)}] {path.name}", file=sys.stderr)
+            print(f"  [{i}/{len(targets)}] [{rid}] {path.name}", file=sys.stderr)
 
     print(f"Output: {OUT_PATH}", file=sys.stderr)
 

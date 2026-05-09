@@ -37,10 +37,10 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+from scripts.corpus import all_videos, all_images
+
 DATA = Path(__file__).resolve().parent / "data"
-VID_DIR = REPO / "videos"
-IMG_DIR = REPO / "images"
-PRIMARY_IMAGES = REPO / "metadata" / "uap-csv.csv"
 
 
 def transcribe_videos() -> None:
@@ -53,15 +53,16 @@ def transcribe_videos() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     model = WhisperModel("small", device="cpu", compute_type="int8")
 
-    videos = sorted(VID_DIR.glob("*.mp4"))
+    videos = list(all_videos())
     print(f"Transcribing {len(videos)} videos...", file=sys.stderr)
     with out.open("w") as f:
-        for i, v in enumerate(videos, 1):
-            print(f"  [{i}/{len(videos)}] {v.name}", file=sys.stderr)
+        for i, (v, rid) in enumerate(videos, 1):
+            print(f"  [{i}/{len(videos)}] [{rid}] {v.name}", file=sys.stderr)
             segments, info = model.transcribe(str(v), beam_size=5)
             text = " ".join(s.text.strip() for s in segments)
             f.write(json.dumps({
                 "file": v.name,
+                "release_id": rid,
                 "kind": "video",
                 "duration_s": info.duration,
                 "language": info.language,
@@ -93,11 +94,11 @@ def caption_images() -> None:
 
     out = DATA / "images.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    images = sorted(p for p in IMG_DIR.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
+    images = [(p, rid) for p, rid in all_images() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
     print(f"Captioning {len(images)} images via Claude CLI...", file=sys.stderr)
 
     with out.open("w") as f:
-        for i, img in enumerate(images, 1):
+        for i, (img, rid) in enumerate(images, 1):
             prompt = (
                 f"Look at the attached image: @{img}\n"
                 "Describe it factually. List salient entities. Transcribe any "
@@ -111,6 +112,7 @@ def caption_images() -> None:
             text = f"{desc.caption}\nEntities: {', '.join(desc.entities)}\n{desc.text_in_image}"
             f.write(json.dumps({
                 "file": img.name,
+                "release_id": rid,
                 "kind": "image",
                 "pages": [{"page": 1, "text": text, "needs_ocr": False}],
                 "caption": desc.caption,

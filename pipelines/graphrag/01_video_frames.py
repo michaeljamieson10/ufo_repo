@@ -45,7 +45,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
 PIPELINES = Path(__file__).resolve().parent.parent
-VID_DIR = REPO / "videos"
+sys.path.insert(0, str(REPO))
+from scripts.corpus import all_videos
+
 OUT_PATH = Path(__file__).resolve().parent / "data" / "video_frames.jsonl"
 FRAMES_DIR = Path(__file__).resolve().parent / "data" / "frames"
 
@@ -161,10 +163,11 @@ def main(argv: list[str]) -> None:
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     FRAMES_DIR.mkdir(parents=True, exist_ok=True)
 
-    videos = sorted(VID_DIR.glob("*.mp4"))
+    videos = list(all_videos())
     if args.limit:
         videos = videos[: args.limit]
-    print(f"[frames] {len(videos)} videos", file=sys.stderr)
+    print(f"[frames] {len(videos)} videos across "
+          f"{len({rid for _, rid in videos})} release(s)", file=sys.stderr)
 
     # Resume support: skip videos already in output.
     done_videos: set[str] = set()
@@ -174,13 +177,14 @@ def main(argv: list[str]) -> None:
                 done_videos.add(json.loads(line)["video_file"])
 
     with OUT_PATH.open("a") as out:
-        for vi, video in enumerate(videos, 1):
+        for vi, (video, rid) in enumerate(videos, 1):
             if video.name in done_videos:
                 print(f"  [{vi}/{len(videos)}] SKIP {video.name}", file=sys.stderr)
                 continue
 
             keyframes = detect_keyframes(video, FRAMES_DIR / video.stem)
-            print(f"  [{vi}/{len(videos)}] {video.name}  {len(keyframes)} keyframes", file=sys.stderr)
+            print(f"  [{vi}/{len(videos)}] [{rid}] {video.name}  {len(keyframes)} keyframes",
+                  file=sys.stderr)
             if not keyframes:
                 continue
 
@@ -192,6 +196,7 @@ def main(argv: list[str]) -> None:
             for (idx, ts, path), cap, cv, tv in zip(keyframes, captions, clip_vecs, text_vecs):
                 row = {
                     "video_file": video.name,
+                    "release_id": rid,
                     "frame_path": str(path.relative_to(FRAMES_DIR.parent)),
                     "frame_idx": int(idx),
                     "timestamp_s": float(ts),

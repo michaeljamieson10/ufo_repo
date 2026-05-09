@@ -40,7 +40,9 @@ from PIL import Image
 import pytesseract
 
 REPO = Path(__file__).resolve().parent.parent
-PDF_DIR = REPO / "pdfs"
+sys.path.insert(0, str(REPO))
+from scripts.corpus import find_pdf, RELEASES_DIR
+
 DATA = Path(__file__).resolve().parent / "data"
 IN_PATH = DATA / "extracted.jsonl"
 OUT_PATH = DATA / "extracted_ocr.jsonl"
@@ -63,11 +65,11 @@ def ocr_page(pdf_path: Path, page_num: int) -> str:
 
 
 def _ocr_record(rec: dict) -> dict:
-    pdf_path = PDF_DIR / rec["file"]
-    if not pdf_path.exists():
-        # Bash and Python downloads sanitized names differently — try
-        # the un-sanitized variants used by the original URL.
-        candidates = list(PDF_DIR.glob(rec["file"].replace("_", "*")))
+    pdf_path = find_pdf(rec.get("release_id", "release_01"), rec["file"])
+    if pdf_path is None:
+        # Glob-fallback for sanitization differences across downloader runs.
+        rel_dir = RELEASES_DIR / rec.get("release_id", "release_01") / "pdfs"
+        candidates = list(rel_dir.glob(rec["file"].replace("_", "*")))
         if candidates:
             pdf_path = candidates[0]
         else:

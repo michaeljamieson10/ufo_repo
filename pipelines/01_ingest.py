@@ -46,8 +46,9 @@ from pathlib import Path
 import fitz  # PyMuPDF
 
 REPO = Path(__file__).resolve().parent.parent
-PDF_DIR = REPO / "pdfs"
-META_CSV = REPO / "metadata" / "uap-csv.csv"
+sys.path.insert(0, str(REPO))
+from scripts.corpus import all_pdfs, manifest_rows, basename_from_url
+
 OUT_PATH = Path(__file__).resolve().parent / "data" / "extracted.jsonl"
 
 # Heuristic: pages with fewer than this many printable chars are almost
@@ -56,38 +57,32 @@ OUT_PATH = Path(__file__).resolve().parent / "data" / "extracted.jsonl"
 MIN_CHARS = 50
 
 
-def basename_from_url(url: str) -> str:
-    return urllib.parse.unquote(os.path.basename(urllib.parse.urlsplit(url).path))
-
-
-def load_manifest() -> dict[str, dict]:
-    """Map PDF basename -> CSV row metadata. We try multiple basename
-    variants because the bash and python downloaders sanitized names
-    differently (em-dashes, brackets, apostrophes)."""
-    out: dict[str, dict] = {}
-    with open(META_CSV, encoding="utf-8-sig") as f:
-        for r in csv.DictReader(f):
-            link = (r.get("PDF | Image Link") or "").strip()
-            if not link.lower().endswith(".pdf"):
-                continue
-            raw = basename_from_url(link).replace(" ", "_")
-            cleaned = "".join(
-                c if c.isalnum() or c in "._-[]" else "_" for c in raw
-            )
-            row = {
-                "title": (r.get("Title") or "").strip().replace("\n", " "),
-                "agency": (r.get("Agency") or "").strip(),
-                "incident_date": (r.get("Incident Date") or "").strip(),
-                "incident_location": (r.get("Incident Location") or "").strip(),
-                "description": (r.get("Description Blurb") or "").strip(),
-                "release_date": (r.get("Release Date") or "").strip(),
-            }
-            out[raw] = row
-            out[cleaned] = row
+def load_manifest() -> dict[tuple[str, str], dict]:
+    """Map (release_id, PDF basename) -> CSV row metadata. Tries multiple
+    basename variants because the bash and python downloaders sanitized
+    names differently (em-dashes, brackets, apostrophes)."""
+    out: dict[tuple[str, str], dict] = {}
+    for r, rid in manifest_rows():
+        link = (r.get("PDF | Image Link") or "").strip()
+        if not link.lower().endswith(".pdf"):
+            continue
+        raw = basename_from_url(link).replace(" ", "_")
+        cleaned = "".join(c if c.isalnum() or c in "._-[]" else "_" for c in raw)
+        row = {
+            "title": (r.get("Title") or "").strip().replace("\n", " "),
+            "agency": (r.get("Agency") or "").strip(),
+            "incident_date": (r.get("Incident Date") or "").strip(),
+            "incident_location": (r.get("Incident Location") or "").strip(),
+            "description": (r.get("Description Blurb") or "").strip(),
+            "release_date": (r.get("Release Date") or "").strip(),
+            "release_id": rid,
+        }
+        out[(rid, raw)] = row
+        out[(rid, cleaned)] = row
     return out
 
 
-def extract_pdf(pdf_path: Path) -> dict:
+def extract_pdf(pdf_path: Path, release_id: str) -> dict:
     pages = []
     with fitz.open(pdf_path) as doc:
         for i, page in enumerate(doc, start=1):
@@ -100,26 +95,28 @@ def extract_pdf(pdf_path: Path) -> dict:
                     "needs_ocr": len(text) < MIN_CHARS,
                 }
             )
-    return {"file": pdf_path.name, "pages": pages}
+    return {"file": pdf_path.name, "release_id": release_id, "pages": pages}
 
 
-def _worker(path_str: str) -> dict:
-    return extract_pdf(Path(path_str))
+def _worker(args: tuple[str, str]) -> dict:
+    path_str, rid = args
+    return extract_pdf(Path(path_str), rid)
 
 
 def main() -> None:
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest()
-    pdfs = sorted(PDF_DIR.glob("*.pdf"))
-    print(f"Extracting {len(pdfs)} PDFs ...", file=sys.stderr)
+    pdfs = list(all_pdfs())
+    print(f"Extracting {len(pdfs)} PDFs across "
+          f"{len({rid for _, rid in pdfs})} release(s)...", file=sys.stderr)
 
     t0 = time.time()
     needs_ocr_count = 0
     with OUT_PATH.open("w") as out, ProcessPoolExecutor() as ex:
-        futs = {ex.submit(_worker, str(p)): p for p in pdfs}
+        futs = {ex.submit(_worker, (str(p), rid)): p for p, rid in pdfs}
         for i, fut in enumerate(as_completed(futs), 1):
             rec = fut.result()
-            meta = manifest.get(rec["file"], {})
+            meta = manifest.get((rec["release_id"], rec["file"]), {})
             rec.update(meta)
             n_ocr = sum(1 for p in rec["pages"] if p["needs_ocr"])
             if n_ocr > 0:
@@ -128,7 +125,8 @@ def main() -> None:
             rec["pages_needing_ocr"] = n_ocr
             out.write(json.dumps(rec) + "\n")
             if i % 10 == 0 or i == len(pdfs):
-                print(f"  {i}/{len(pdfs)}  {rec['file']} ({n_ocr}/{len(rec['pages'])} pages need OCR)",
+                print(f"  {i}/{len(pdfs)}  [{rec['release_id']}] {rec['file']} "
+                      f"({n_ocr}/{len(rec['pages'])} pages need OCR)",
                       file=sys.stderr)
 
     print(
