@@ -60,48 +60,40 @@ sys.path.insert(0, str(PIPELINES))
 
 
 def detect_keyframes(video_path: Path, out_dir: Path) -> list[tuple[int, float, Path]]:
-    """Return a list of (frame_idx, timestamp_seconds, image_path)."""
+    """Return a list of (frame_idx, timestamp_seconds, image_path).
+
+    Uses scenedetect for scene boundaries and OpenCV directly for frame
+    extraction. We bypass scenedetect's `save_images` because that
+    helper's signature has churned across 0.6 / 0.7 — calling cv2
+    ourselves is one less API to track and a few lines shorter."""
+    import cv2
     from scenedetect import detect, ContentDetector
-    from scenedetect.video_splitter import save_images
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    cap = cv2.VideoCapture(str(video_path))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
     scenes = detect(str(video_path), ContentDetector(threshold=SCENE_THRESHOLD))
+    if scenes:
+        # One frame per scene, taken at the scene's start frame.
+        targets = [(s.frame_num, s.get_seconds()) for s, _ in scenes]
+    else:
+        # Single-shot clip — first / middle / last as a fallback.
+        targets = [(0, 0.0),
+                   (total // 2, (total // 2) / fps),
+                   (max(0, total - 1), max(0, total - 1) / fps)]
 
-    if not scenes:
-        # Single-shot clip — fall back to first + middle + last frames.
-        import cv2
-        cap = cv2.VideoCapture(str(video_path))
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        targets = [0, total // 2, max(0, total - 1)]
-        out: list[tuple[int, float, Path]] = []
-        for idx in targets:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ok, frame = cap.read()
-            if not ok:
-                continue
-            p = out_dir / f"{video_path.stem}_f{idx:06d}.jpg"
-            cv2.imwrite(str(p), frame)
-            out.append((idx, idx / fps, p))
-        cap.release()
-        return out
-
-    # save_images writes one frame at the *start* of each scene.
-    save_images(
-        scenes, video_path, num_images=1, output_dir=out_dir,
-        image_name_template="$VIDEO_NAME-Scene-$SCENE_NUMBER",
-    )
-    out = []
-    for i, (start, _) in enumerate(scenes, start=1):
-        # save_images uses 1-indexed scene numbers and the ORIGINAL stem
-        path = out_dir / f"{video_path.stem}-Scene-{i:03d}-01.jpg"
-        if not path.exists():
-            # Older PySceneDetect versions use a different template
-            for cand in out_dir.glob(f"{video_path.stem}-Scene-{i:03d}*.jpg"):
-                path = cand
-                break
-        if path.exists():
-            out.append((start.frame_num, start.get_seconds(), path))
+    out: list[tuple[int, float, Path]] = []
+    for idx, ts in targets:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        p = out_dir / f"{video_path.stem}_f{idx:06d}.jpg"
+        cv2.imwrite(str(p), frame)
+        out.append((idx, ts, p))
+    cap.release()
     return out
 
 

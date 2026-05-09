@@ -9,6 +9,9 @@ releases/*/run.out
 __pycache__/
 .venv/
 
+# Build / runtime logs (regenerable, not source).
+logs/
+
 # Vector / graph DB stores — regenerable from the committed JSONLs via
 # scripts/make_dbs.sh, OR downloadable as a tarball from GitHub Releases.
 pipelines/store/
