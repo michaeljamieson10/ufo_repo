@@ -1,0 +1,9 @@
+# Large binaries — too big for git. Keep manifest + scripts only.
+pdfs/
+images/
+videos/
+download.log
+run.out
+*.part
+.DS_Store
+__pycache__/
