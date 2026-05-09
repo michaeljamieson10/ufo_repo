@@ -181,7 +181,13 @@ def extract_one(args: tuple) -> dict:
     from langchain_core.messages import HumanMessage, SystemMessage
     from graphrag.schema import ChunkExtraction
 
-    model = ClaudeCLIChatModel(model="sonnet", timeout_seconds=120)
+    # Haiku for entity extraction: 3-5x faster than Sonnet on a corpus
+    # this size, and the entity-extraction task is well within Haiku's
+    # capabilities (it's structured output, not reasoning). Override
+    # via UFO_ENTITY_MODEL=sonnet if quality drops on your data.
+    import os as _os
+    _model_alias = _os.environ.get("UFO_ENTITY_MODEL", "haiku")
+    model = ClaudeCLIChatModel(model=_model_alias, timeout_seconds=120)
     structured = model.with_structured_output(ChunkExtraction)
     try:
         result = structured.invoke([
