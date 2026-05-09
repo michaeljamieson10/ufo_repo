@@ -1,0 +1,31 @@
+# --- Core LangChain / LangGraph ---
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langgraph>=0.2.0
+langchain-text-splitters>=0.3.0
+
+# --- Vector store ---
+langchain-chroma>=0.2.0
+chromadb>=0.5.0
+
+# --- Local embeddings + reranker ---
+# No API key needed; the Claude/Codex CLIs don't expose embeddings, so
+# we run a small HF model on CPU (BAAI/bge-small-en-v1.5).
+langchain-huggingface>=0.3.0
+sentence-transformers>=3.0.0
+
+# --- Hybrid retrieval ---
+rank-bm25>=0.2.2
+
+# --- PDF + OCR ---
+pymupdf>=1.24.0          # text-layer extraction + page rasterization
+pytesseract>=0.3.10      # tesseract bindings (brew install tesseract first)
+Pillow>=10.0.0
+
+# --- Optional: stage 06 multimodal ---
+# faster-whisper>=1.0.0  # uncomment for video transcription
+
+# --- Optional cloud SDKs (only if you swap providers) ---
+# langchain-anthropic>=0.2.0
+# langchain-openai>=0.2.0
