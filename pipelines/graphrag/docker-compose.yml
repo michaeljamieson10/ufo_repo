@@ -1,0 +1,10 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: ufo-falkordb
+    ports:
+      - "6379:6379"   # Redis-protocol port for the falkordb client
+      - "3000:3000"   # FalkorDB Browser UI (open http://localhost:3000)
+    volumes:
+      - ./data/falkordb:/data
+    restart: unless-stopped

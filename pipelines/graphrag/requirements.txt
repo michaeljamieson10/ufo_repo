@@ -1,0 +1,16 @@
+# GraphRAG additions on top of pipelines/requirements.txt
+# (everything in pipelines/requirements.txt is still needed)
+
+# FalkorDB graph + vector DB
+falkordb>=1.0.10
+
+# Scene detection for video keyframes
+scenedetect[opencv]>=0.6.4
+
+# CLIP image embeddings (visual similarity)
+open-clip-torch>=2.24.0
+torch>=2.2.0
+
+# Graph algorithms — Leiden community detection
+networkx>=3.2
+graspologic>=3.4.0
