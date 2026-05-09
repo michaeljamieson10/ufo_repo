@@ -30,7 +30,12 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-from langchain.retrievers import EnsembleRetriever
+# In langchain 1.x EnsembleRetriever moved to langchain_classic; keep a
+# compat fallback so this works on both 0.3.x and 1.x.
+try:
+    from langchain_classic.retrievers import EnsembleRetriever
+except ImportError:
+    from langchain.retrievers import EnsembleRetriever
 from langchain_chroma import Chroma
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document

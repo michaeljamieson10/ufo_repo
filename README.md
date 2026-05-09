@@ -70,6 +70,45 @@ new tranche means re-running the pipeline, not rewiring it.
 Each chunk in either pipeline is tagged with `release_id` so retrieval
 can answer "what's new in release_NN?" out of the box.
 
+## Sharing this repo
+
+Three layers, separated by cost-to-rebuild:
+
+1. **Source files** (`releases/*/{pdfs,images,videos}/`) — gitignored.
+   They're public domain, but heavy. Re-mirror with
+   `python scripts/download.py --release N`. ~3.8 GB for release 01.
+2. **Pipeline JSONLs** (`pipelines/data/*.jsonl`,
+   `pipelines/graphrag/data/*.jsonl`) — **committed**. ~30 MB. Encodes
+   every expensive LLM extraction (OCR, captions, entities,
+   communities) so cloners don't pay for them again.
+3. **Vector / graph DBs** (`pipelines/store/`,
+   `pipelines/graphrag/data/falkordb/`) — gitignored. Either rebuild
+   from JSONLs in ~5 min via `scripts/make_dbs.sh`, or download the
+   pre-built tarball from a GitHub Release.
+
+### Cloning the repo
+
+```bash
+git clone https://github.com/<you>/ufo_repo.git
+cd ufo_repo
+python scripts/download.py --release 1   # mirror source files (~3.8 GB)
+scripts/make_dbs.sh                      # rebuild Chroma + FalkorDB from JSONLs
+```
+
+### Publishing a tarball release
+
+```bash
+scripts/release_tarball.sh
+gh release create v$(date +%Y.%m.%d) ufo-dbs-*.tar.gz \
+  --title "Pre-built DBs $(date +%Y-%m-%d)" \
+  --notes "Chroma + FalkorDB built from release_01."
+```
+
+Downstream users can then skip the rebuild:
+```bash
+curl -L https://github.com/<you>/ufo_repo/releases/latest/download/ufo-dbs-*.tar.gz | tar -xzf -
+```
+
 ## Notes on the war.gov source
 
 - Page is rendered by Vue and exposes nothing static; the manifest

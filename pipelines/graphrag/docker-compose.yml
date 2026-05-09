@@ -4,7 +4,9 @@ services:
     container_name: ufo-falkordb
     ports:
       - "6379:6379"   # Redis-protocol port for the falkordb client
-      - "3000:3000"   # FalkorDB Browser UI (open http://localhost:3000)
+      - "13000:3000"  # FalkorDB Browser UI (open http://localhost:13000)
+                      # 3000 is commonly taken by Grafana / dev servers,
+                      # so we expose on 13000 to avoid the collision.
     volumes:
       - ./data/falkordb:/data
     restart: unless-stopped
