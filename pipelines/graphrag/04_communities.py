@@ -30,6 +30,7 @@ Output
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -118,10 +119,50 @@ def detect_communities(entity_meta: dict, edge_w: dict) -> dict[str, int]:
     return cmap
 
 
+SUMMARIZE_SYSTEM = "You write concise factual cluster summaries. No preamble."
+
+
+def summarize_community_api(cid: int, members: list[dict], example_chunks: list[str]) -> str:
+    """Anthropic API path with prompt caching — same pattern as stage 03.
+
+    Why: 1000+ communities × 1 LLM call each via the CLI would burn
+    through subscription rate limits in 30 min. The API path uses
+    prompt caching on the system prompt so we pay ~$0.50 total on Haiku.
+    """
+    import anthropic
+    client = anthropic.Anthropic()
+    member_lines = [f"- {m['type']}: {m['name']}" for m in members[:30]]
+    chunks_text = "\n---\n".join(example_chunks[:5])
+    user = (
+        "Summarize a cluster of entities from a declassified UAP/UFO corpus.\n\n"
+        "ENTITIES IN THE CLUSTER:\n" + "\n".join(member_lines) + "\n\n"
+        "EXAMPLE CHUNKS WHERE THESE ENTITIES CO-OCCUR:\n" + chunks_text + "\n\n"
+        "Write 2–4 sentences covering: the cluster's theme, the key entities, "
+        "the rough time period (if discernible), and any notable patterns. "
+        "Be factual and specific."
+    )
+    msg = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=512,
+        system=[
+            {
+                "type": "text",
+                "text": SUMMARIZE_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=[{"role": "user", "content": user}],
+    )
+    return msg.content[0].text.strip() if msg.content else ""
+
+
 def summarize_community(cid: int, members: list[dict], example_chunks: list[str]) -> str:
+    """Default to API path if ANTHROPIC_API_KEY is set; else CLI."""
+    import os as _os
+    if _os.environ.get("ANTHROPIC_API_KEY"):
+        return summarize_community_api(cid, members, example_chunks)
     from llm import ClaudeCLIChatModel
     from langchain_core.messages import HumanMessage, SystemMessage
-
     model = ClaudeCLIChatModel(model="sonnet", timeout_seconds=120)
     member_lines = [f"- {m['type']}: {m['name']}" for m in members[:30]]
     chunks_text = "\n---\n".join(example_chunks[:5])
@@ -133,7 +174,7 @@ def summarize_community(cid: int, members: list[dict], example_chunks: list[str]
         "the rough time period (if discernible), and any notable patterns. "
         "Be factual and specific. No prose preamble."
     )
-    msg = model.invoke([SystemMessage(content="You write concise factual cluster summaries."),
+    msg = model.invoke([SystemMessage(content=SUMMARIZE_SYSTEM),
                         HumanMessage(content=prompt)])
     return str(msg.content).strip()
 
@@ -151,7 +192,14 @@ def main() -> None:
     by_community: dict[int, list[str]] = defaultdict(list)
     for eid, cid in cmap.items():
         by_community[cid].append(eid)
-    print(f"  {len(by_community)} communities", file=sys.stderr)
+    raw_count = len(by_community)
+    # Drop singletons / tiny clusters: a 1-entity "cluster" is just a
+    # mention, not a community. The interesting global structure
+    # lives in the 5+ member groups.
+    MIN_SIZE = int(os.environ.get("UFO_MIN_COMMUNITY_SIZE", "5"))
+    by_community = {cid: ms for cid, ms in by_community.items() if len(ms) >= MIN_SIZE}
+    print(f"  {raw_count} raw communities, {len(by_community)} kept (size >= {MIN_SIZE})",
+          file=sys.stderr)
 
     # Map chunks -> community by majority membership for finding
     # representative chunks to feed the summarizer.
