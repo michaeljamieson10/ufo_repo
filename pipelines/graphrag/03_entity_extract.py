@@ -256,6 +256,88 @@ def extract_batch(batch: list[tuple]) -> list[dict]:
     return rows
 
 
+def extract_batch_api(batch: list[tuple]) -> list[dict]:
+    """Anthropic API path — bypasses CLI subscription rate limits.
+
+    Why this exists
+    ---------------
+    For 8000+ chunks of bulk extraction, the CLI subprocess approach
+    burns through subscription rate limits in ~30 minutes (we hit the
+    ceiling twice on this corpus). The API has its own per-tier RPM
+    limit but a much higher headroom on a brand-new key.
+
+    Prompt caching cuts the bulk of input cost: the SYSTEM_PROMPT is
+    identical across every batch and is ~750 tokens; we mark it with
+    `cache_control={"type": "ephemeral"}` so subsequent batches read
+    from the 5-min cache (~10x cheaper than uncached input).
+
+    Cost estimate for this corpus (~1500 batches at Haiku rates):
+      input  ~ 5MB cached + 1500 × 5KB uncached ≈ $0.20
+      output ~ 1500 × 2KB ≈ $1.50
+      total  ~ $2 (vs ~2-3 hours of CLI rate-limit waiting)
+    """
+    import anthropic
+    import json as _json
+    from graphrag.schema import ChunkExtraction
+    from pydantic import BaseModel
+
+    class BatchResult(BaseModel):
+        results: list[ChunkExtraction]
+
+    client = anthropic.Anthropic()  # picks up ANTHROPIC_API_KEY from env
+    chunks_text = "\n\n".join(
+        f"=== CHUNK {i+1} ===\n{text}" for i, (_cid, text, _m) in enumerate(batch)
+    )
+    schema_json = _json.dumps(BatchResult.model_json_schema(), indent=2)
+    user = (
+        f"Extract entities + incidents from each of the {len(batch)} chunks "
+        f"below. Return ONLY a JSON object matching this schema (no prose, "
+        f"no markdown fences):\n\n{schema_json}\n\n{chunks_text}"
+    )
+    try:
+        msg = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=8192,
+            system=[
+                {
+                    "type": "text",
+                    "text": SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user}],
+        )
+    except Exception as e:
+        return [
+            {"chunk_id": cid, "metadata": meta, "error": f"api: {e}"}
+            for cid, _t, meta in batch
+        ]
+
+    raw = msg.content[0].text if msg.content else ""
+    # Tolerate the model wrapping JSON in fences despite the instruction.
+    text = raw.strip()
+    if text.startswith("```"):
+        import re as _re
+        text = _re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = _re.sub(r"\n?```$", "", text)
+    try:
+        out = BatchResult.model_validate_json(text)
+    except Exception as e:
+        return [
+            {"chunk_id": cid, "metadata": meta, "error": f"parse: {e}: {text[:200]}"}
+            for cid, _t, meta in batch
+        ]
+
+    rows = []
+    for (cid, _t, meta), result in zip(batch, out.results):
+        rows.append({"chunk_id": cid, "metadata": meta, "extraction": result.model_dump()})
+    if len(out.results) < len(batch):
+        for cid, _t, meta in batch[len(out.results):]:
+            rows.append({"chunk_id": cid, "metadata": meta,
+                         "error": f"batch returned only {len(out.results)} of {len(batch)}"})
+    return rows
+
+
 def main(argv: list[str]) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, default=4,
@@ -266,6 +348,11 @@ def main(argv: list[str]) -> None:
                          "or losing per-chunk fidelity.")
     ap.add_argument("--no-batch", action="store_true",
                     help="One chunk per CLI call (legacy, hits rate limits faster).")
+    ap.add_argument("--use-api", action="store_true",
+                    help="Use Anthropic API + prompt caching instead of the "
+                         "claude CLI. Bypasses subscription rate limits and "
+                         "cuts cost ~10x via the ephemeral system-prompt "
+                         "cache. Requires ANTHROPIC_API_KEY in env.")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args(argv)
 
@@ -298,10 +385,13 @@ def main(argv: list[str]) -> None:
     # Batched mode (default).
     bs = max(1, args.batch_size)
     batches = [work[i : i + bs] for i in range(0, n, bs)]
-    print(f"[entities] {len(batches)} batches × {bs} chunks each", file=sys.stderr)
+    backend = extract_batch_api if args.use_api else extract_batch
+    print(f"[entities] {len(batches)} batches × {bs} chunks each "
+          f"({'Anthropic API + cache' if args.use_api else 'claude CLI'})",
+          file=sys.stderr)
 
     with OUT_PATH.open("a") as out, ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(extract_batch, b): b[0][0] for b in batches}
+        futs = {ex.submit(backend, b): b[0][0] for b in batches}
         completed_chunks = 0
         for i, fut in enumerate(as_completed(futs), 1):
             rows = fut.result()

@@ -26,3 +26,4 @@ pipelines/graphrag/data/frames/
 !pipelines/data/*.jsonl
 !pipelines/graphrag/data/
 !pipelines/graphrag/data/*.jsonl
+.env
