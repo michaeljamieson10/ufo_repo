@@ -176,15 +176,12 @@ def iter_chunks():
 
 
 def extract_one(args: tuple) -> dict:
+    """Single-chunk extraction (legacy path, used by --no-batch)."""
     chunk_id, text, meta = args
     from llm import ClaudeCLIChatModel
     from langchain_core.messages import HumanMessage, SystemMessage
     from graphrag.schema import ChunkExtraction
 
-    # Haiku for entity extraction: 3-5x faster than Sonnet on a corpus
-    # this size, and the entity-extraction task is well within Haiku's
-    # capabilities (it's structured output, not reasoning). Override
-    # via UFO_ENTITY_MODEL=sonnet if quality drops on your data.
     import os as _os
     _model_alias = _os.environ.get("UFO_ENTITY_MODEL", "haiku")
     model = ClaudeCLIChatModel(model=_model_alias, timeout_seconds=120)
@@ -199,10 +196,76 @@ def extract_one(args: tuple) -> dict:
         return {"chunk_id": chunk_id, "metadata": meta, "error": str(e)}
 
 
+def extract_batch(batch: list[tuple]) -> list[dict]:
+    """Extract entities for a *batch* of chunks in a single CLI call.
+
+    Why batch
+    ---------
+    Claude subscription rate limits cap requests/hour, not tokens.
+    Sending 5-8 chunks per CLI call cuts request count ~6x with no
+    quality loss on entity extraction (each chunk is independent —
+    the model just emits a list of N ChunkExtractions).
+
+    The schema-bounded JSON output makes per-chunk parsing trivial:
+    we ask for {"results": [<extraction_1>, ..., <extraction_N>]}
+    and zip the parsed list against the input chunks.
+    """
+    from llm import ClaudeCLIChatModel
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from graphrag.schema import ChunkExtraction
+    from pydantic import BaseModel
+    import os as _os
+
+    class BatchResult(BaseModel):
+        results: list[ChunkExtraction]
+
+    _model_alias = _os.environ.get("UFO_ENTITY_MODEL", "haiku")
+    model = ClaudeCLIChatModel(model=_model_alias, timeout_seconds=180)
+    structured = model.with_structured_output(BatchResult)
+
+    chunks_text = "\n\n".join(
+        f"=== CHUNK {i+1} ===\n{text}" for i, (_cid, text, _m) in enumerate(batch)
+    )
+    user = (
+        f"Extract entities + incidents from each of the {len(batch)} chunks "
+        f"below. Return a JSON object with key 'results' containing a list of "
+        f"{len(batch)} ChunkExtraction objects, in chunk order.\n\n"
+        f"{chunks_text}"
+    )
+    try:
+        out = structured.invoke([
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=user),
+        ])
+    except Exception as e:
+        # Fall back to per-chunk so a single bad batch doesn't lose the lot.
+        err = str(e)
+        return [
+            {"chunk_id": cid, "metadata": meta, "error": err}
+            for cid, _t, meta in batch
+        ]
+
+    # Pad/truncate if the model returned the wrong count.
+    rows = []
+    for (cid, _t, meta), result in zip(batch, out.results):
+        rows.append({"chunk_id": cid, "metadata": meta, "extraction": result.model_dump()})
+    if len(out.results) < len(batch):
+        for cid, _t, meta in batch[len(out.results):]:
+            rows.append({"chunk_id": cid, "metadata": meta,
+                         "error": f"batch returned only {len(out.results)} of {len(batch)}"})
+    return rows
+
+
 def main(argv: list[str]) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, default=4,
-                    help="Concurrent CLI calls. CLI is rate-limited so 4-6 is usually safe.")
+                    help="Concurrent CLI calls.")
+    ap.add_argument("--batch-size", type=int, default=5,
+                    help="Chunks per CLI call. 5 is a sweet spot — bigger "
+                         "saves more requests but risks the model truncating "
+                         "or losing per-chunk fidelity.")
+    ap.add_argument("--no-batch", action="store_true",
+                    help="One chunk per CLI call (legacy, hits rate limits faster).")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args(argv)
 
@@ -217,17 +280,41 @@ def main(argv: list[str]) -> None:
     work = [(cid, t, m) for cid, t, m in iter_chunks() if cid not in done]
     if args.limit:
         work = work[: args.limit]
-    print(f"[entities] {len(work)} chunks pending ({len(done)} already done)", file=sys.stderr)
+    n = len(work)
+    print(f"[entities] {n} chunks pending ({len(done)} already done)", file=sys.stderr)
+
+    if args.no_batch:
+        with OUT_PATH.open("a") as out, ThreadPoolExecutor(max_workers=args.workers) as ex:
+            futs = {ex.submit(extract_one, w): w[0] for w in work}
+            for i, fut in enumerate(as_completed(futs), 1):
+                row = fut.result()
+                out.write(json.dumps(row) + "\n")
+                out.flush()
+                if i % 10 == 0 or i == n:
+                    err = "ERR" if "error" in row else "OK"
+                    print(f"  [{i}/{n}] {err} {row['chunk_id']}", file=sys.stderr)
+        return
+
+    # Batched mode (default).
+    bs = max(1, args.batch_size)
+    batches = [work[i : i + bs] for i in range(0, n, bs)]
+    print(f"[entities] {len(batches)} batches × {bs} chunks each", file=sys.stderr)
 
     with OUT_PATH.open("a") as out, ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(extract_one, w): w[0] for w in work}
+        futs = {ex.submit(extract_batch, b): b[0][0] for b in batches}
+        completed_chunks = 0
         for i, fut in enumerate(as_completed(futs), 1):
-            row = fut.result()
-            out.write(json.dumps(row) + "\n")
+            rows = fut.result()
+            for row in rows:
+                out.write(json.dumps(row) + "\n")
             out.flush()
-            if i % 10 == 0 or i == len(work):
-                err = "ERR" if "error" in row else "OK"
-                print(f"  [{i}/{len(work)}] {err} {row['chunk_id']}", file=sys.stderr)
+            completed_chunks += len(rows)
+            err_n = sum(1 for r in rows if "error" in r)
+            tag = f"OK {len(rows)}" if err_n == 0 else f"PARTIAL {len(rows)-err_n}/{len(rows)}"
+            print(
+                f"  batch [{i}/{len(batches)}] {tag} ({completed_chunks}/{n} chunks)",
+                file=sys.stderr,
+            )
 
 
 if __name__ == "__main__":
