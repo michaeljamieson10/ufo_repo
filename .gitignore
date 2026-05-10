@@ -27,3 +27,4 @@ pipelines/graphrag/data/frames/
 !pipelines/graphrag/data/
 !pipelines/graphrag/data/*.jsonl
 .env
+ufo-dbs-*.tar.gz

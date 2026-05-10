@@ -21,6 +21,22 @@ cd "$REPO"
 
 NAME="${1:-ufo-dbs-$(date +%Y-%m-%d).tar.gz}"
 
+# Force a fresh FalkorDB save so the on-host RDB is current. If the
+# host volume mount doesn't have the RDB (older docker-compose mount
+# pointed at /data instead of /var/lib/falkordb/data), copy it out
+# of the container directly.
+if docker ps --format '{{.Names}}' | grep -q '^ufo-falkordb$'; then
+  echo "Flushing FalkorDB to disk..."
+  docker exec ufo-falkordb redis-cli BGSAVE >/dev/null
+  sleep 2
+  mkdir -p pipelines/graphrag/data/falkordb
+  if [ ! -f pipelines/graphrag/data/falkordb/dump.rdb ]; then
+    echo "Copying dump.rdb out of container (mount-path mismatch fallback)..."
+    docker cp ufo-falkordb:/var/lib/falkordb/data/dump.rdb \
+      pipelines/graphrag/data/falkordb/dump.rdb
+  fi
+fi
+
 # What goes in: the binary stores. What stays out: source PDFs/videos
 # (those are mirrorable from war.gov), virtualenvs, frame jpgs (huge),
 # .DS_Store noise.

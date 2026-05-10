@@ -8,5 +8,8 @@ services:
                       # 3000 is commonly taken by Grafana / dev servers,
                       # so we expose on 13000 to avoid the collision.
     volumes:
-      - ./data/falkordb:/data
+      # FalkorDB writes dump.rdb to /var/lib/falkordb/data, NOT /data
+      # (its CONFIG dir override). Mount the persistence path directly
+      # so on-host backups + tarball releases see the live RDB.
+      - ./data/falkordb:/var/lib/falkordb/data
     restart: unless-stopped
